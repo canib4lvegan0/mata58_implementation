@@ -1,149 +1,131 @@
 /*
- * Cockcrow
- * created by robson on 20/10/2020.
- *
- * This litle program simulates the singing of a neighborhood of roosters using threads,
- * mutex and conditional variables.
- *
-    Rules:
-        1. the roosters can only sing at sunrise;
-        2. only one rooster can sing at a time;
-        3. one rooster 2 seconds singing;
-        4. after [rule 3], its must be 4 unable to crow for 4 seconds;
+ * Cockcrow - producer
+ * implement the previous cockcrow using IPC (memory shared, pipe or message queues)
 */
+
+#pragma clang diagnostic push
+#pragma ide diagnostic ignored "EndlessLoop"
 
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <semaphore.h>
 #include <unistd.h>
-#include <time.h>
-
-#include <mqueue.h>
-#include <sys/stat.h>
 #include <sys/mman.h>
-#include <unistd.h>
+#include <fcntl.h>
+//#include <string.h>
+//#include <semaphore.h>
 
-
-#pragma clang diagnostic push
-#pragma ide diagnostic ignored "EndlessLoop"
-#define SHARED "/sharedmem5"
-
-// in seconds
-#define UNTIL_SUNRISE 5            // time until next sunrise
+#define NAME_SHARED "/sharedmem5"   // shared memory name
+/*in seconds*/
+#define UNTIL_SUNRISE 5             // time until next sunrise
 #define SUNRISE_TIME 5              // sunrise duration
 #define TIME_CROWING 1              // time of a crowing [rule 3]
 #define TIME_UNABLE 4               // time unable to crow [rule 4]
 
-//pthread_mutex_t m_cockcrow, *prt_m;         // mutex for cockcrow [rule 2]
-//pthread_cond_t sunrise, *prt_sr;             // conditional variable for (is or isn't) sunrise [rule 1]
-//int countdown_sunrise = 0, *prt_ct_sr;              // countdown for  sunrise [rule 1]
-//int fd1, fd2, fd3;
-int fd;
 
+/*struct with shared variables*/
 struct mutex_cond{
-    pthread_mutex_t m_cockcrow;
-    pthread_cond_t sunrise;
-    int countdown_sunrise;
+    pthread_mutex_t m_cockcrow;     // mutex for cockcrow [rule 2]
+    pthread_cond_t sunrise;         // conditional variable for (is or isn't) sunrise [rule 1]
+    int countdown_sunrise;          // countdown for  sunrise [rule 1]
 };
 
-struct mutex_cond *p_m_c;
+/*
+pthread_mutex_t m_cockcrow;        // mutex for cockcrow [rule 2]
+pthread_cond_t sunrise;            // conditional variable for (is or isn't) sunrise [rule 1]
+int countdown_sunrise = 0;         // countdown for  sunrise [rule 1]
+*/
+int fd;                        // file descriptor to shared memory
+struct mutex_cond *p_m_c;      // pointer to shared memory region
 
-pthread_cond_t tmp_sunrise;
 
-void *timer_sunrise(){              // thread for the timer of sunrise
+/* thread for the timer of sunrise */
+void *timer_sunrise(){
 
     for(;;){
-        p_m_c->countdown_sunrise = SUNRISE_TIME;
 
-        /*//        JUST TESTING PRODUCER
+/*
+        // TESTING PRODUCER
         p_m_c->sunrise.__align = (int)(random() % 10);
         p_m_c->countdown_sunrise = (int)(random() % 100);
         printf("\twrote sunrise.__align: %lld\n", p_m_c->sunrise.__align);
         printf("\twrote countdown_sunrise: %i\n", p_m_c->countdown_sunrise);
-//        END TEST PRODUCER - IT'S OK!*/
+        // END TEST PRODUCER
+*/
 
-        // SET CONDITION
-        int rtn = pthread_cond_broadcast(&p_m_c->sunrise);       // send a signal for all roosters(threads) waiting for sunrise [rule 1]]
+        /* set condition */
+        p_m_c->countdown_sunrise = SUNRISE_TIME;
         printf("\nThe sunrise is begun!\n");
-        if(rtn != 0){
+
+        /* TODO solve pthread_cond_broadcast()
+         * For some reason I dont know, pthread_cond_broadcast() is crashing
+         * this process, don't make effect to condition and the other consumer processes.
+        */
+        /* send a signal for all roosters(threads) waiting for sunrise [rule 1]] */
+        if(pthread_cond_broadcast(&p_m_c->sunrise) != 0){
             perror("pthread_cond_broadcast");
             exit(-1);
         }
-        // END SET CONDITION
 
-        //  DECREMENT SUNRISE TIME
-        for(; 0 < p_m_c->countdown_sunrise;) {         // <condition> - when countdown is 0, all roosters wait
+        /* decrement sunrise time */
+        for(; 0 < p_m_c->countdown_sunrise;) {      // <condition> - when countdown is 0, all roosters wait
             printf("->%d\n", p_m_c->countdown_sunrise);
-            sleep(1);                  // pass from second to second;
-            // JUST TESTING
-//            p_m_c->sunrise.__align =  10 * p_m_c->countdown_sunrise;
-            p_m_c->countdown_sunrise--;                // decrement sunrise timer
-            printf("\t\tNEW countdown_sunrise: %i\n", p_m_c->countdown_sunrise);
-//            printf("\t\tNEW sunrise.__align: %i\n", p_m_c->sunrise.__align);
+            sleep(1);                      // pass from second to second
+            p_m_c->countdown_sunrise--;
         }
-        //  DECREMENT SUNRISE TIME - IT'S OK!
 
         printf("\nThe sunrise is over!\n");
-        sleep(UNTIL_SUNRISE);                   // wait until next sunrise
+        sleep(UNTIL_SUNRISE);                       // wait until next sunrise
     }
-//    pthread_exit(NULL);                       // not accessed because loop above is infinite
+        // pthread_exit(NULL);          // not accessed because loop above is infinite
 }
 
 int main(int argc, char *argv[]){
 
     pthread_t timer;                             // var to timer_sunrise
 
-    if((fd = shm_open(SHARED, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR)) == -1){
+    /* open|create a shared memory pointer to fd*/
+    if((fd = shm_open(NAME_SHARED, O_RDWR | O_CREAT, 0777)) == -1){
         perror("shm_open");
         exit(-1);
     }
 
+    /* truncate the memory region this process*/
     if(ftruncate(fd, sizeof(struct mutex_cond)) == -1){
         perror("ftruncate");
         exit(-1);
     }
 
+    /* set p_m_c como pointer to new shared memory region*/
     if((p_m_c = mmap(NULL, sizeof(struct mutex_cond), PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0)) == MAP_FAILED){
         perror("mmap");
         exit(-1);
     }
+    close(fd);          // closing fd because it's no longer necessary
 
-/*    close(fd1);
-    close(fd2);
-    close(fd3);*/
-
-/*//  TESTING PRODUCER
+    // TESTING PRODUCER
     while(1){
         p_m_c->sunrise.__align = (int)(random() % 10);
         p_m_c->countdown_sunrise = (int)(random() % 100);
 
-        printf("wrote sunrise.__align: %lld\n", p_m_c->sunrise.__align);
+        if((p_m_c->countdown_sunrise % 2) == 0){
+        // pthread_cond_broadcast(&p_m_c->sunrise);
+            printf("\t\thave condition!\n");
+        }
+
+        // printf("wrote sunrise.__align: %lld\n", p_m_c->sunrise.__align);
         printf("wrote countdown_sunrise: %i\n", p_m_c->countdown_sunrise);
         sleep(1);
     }
-//  END TEST PRODUCER - IT'S OK!*/
+    // END TEST PRODUCER - IT'S OK!
 
-/*    printf("p_m_c: %p\n\n", p_m_c);
-
-    p_m_c->sunrise.__align = 1;
-    printf("wrote: %d in prt_sr->__align\n", p_m_c->sunrise.__align);
-
-    p_m_c->countdown_sunrise = 2;
-    printf("wrote: %d in prt_sr->__align\n", p_m_c->countdown_sunrise);
-
-    p_m_c->m_cockcrow.__align = 3;
-    printf("wrote: %d in prt_sr->__align\n", p_m_c->m_cockcrow.__align);
-
-    sleep(20);
-    exit(1);*/
-    if(pthread_create(&timer, NULL, timer_sunrise, NULL)){         // creating timer_sunrise
-        perror("pthread_create");                                         // if not create, exit
+    /* creating timer_sunrise */
+    if(pthread_create(&timer, NULL, timer_sunrise, NULL)){
+        perror("pthread_create");
         exit(-1);
     }
 
-    pthread_exit(NULL);                      // close main thread
+    pthread_exit(NULL);         // close main thread
 }
 
 
